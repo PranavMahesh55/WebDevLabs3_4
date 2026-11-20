@@ -8,7 +8,6 @@
 # No AI is used on this page -- just plain Python.
 
 import csv
-import pandas as pd
 import streamlit as st
 
 
@@ -95,13 +94,22 @@ descriptions = load_descriptions()
 precautions = load_precautions()
 severity = load_severity()
 
-# Make one big sorted list of every symptom, for the dropdown.
+# Make one big sorted list of every symptom (the real names).
 all_symptoms = []
 for disease in diseases:
     for symptom in diseases[disease]:
         if symptom not in all_symptoms:
             all_symptoms.append(symptom)
 all_symptoms.sort()
+
+# Make nice-looking names for the dropdown, and remember which real
+# symptom each nice name belongs to.
+nice_names = []
+nice_to_real = {}
+for symptom in all_symptoms:
+    nice = pretty(symptom)
+    nice_names.append(nice)
+    nice_to_real[nice] = symptom
 
 
 # ----------------------------------------------------------------------
@@ -118,11 +126,12 @@ st.caption("Our dataset has " + str(len(diseases)) +
            " conditions and " + str(len(all_symptoms)) + " symptoms.")
 
 # --- Input 1: choose your symptoms ---
-chosen = st.multiselect(
-    "Select your symptoms:",
-    options=all_symptoms,
-    format_func=pretty,  # show the nice names, but keep the real ones for matching
-)
+chosen_nice = st.multiselect("Select your symptoms:", nice_names)
+
+# Turn the nice names the user picked back into the real symptom names.
+chosen = []
+for name in chosen_nice:
+    chosen.append(nice_to_real[name])
 
 # --- Input 2: how many results to show ---
 top_n = st.slider("How many top conditions should we show?", 1, 10, 5)
@@ -137,25 +146,41 @@ if len(chosen) == 0:
 # Scoring: count how many of your symptoms each disease has
 # ----------------------------------------------------------------------
 
-ranked = []  # list of (match_count, disease)
+# Dictionary: disease -> how many of your symptoms it has.
+scores = {}
 for disease in diseases:
     match_count = 0
     for symptom in chosen:
         if symptom in diseases[disease]:
             match_count += 1
     if match_count > 0:
-        ranked.append((match_count, disease))
+        scores[disease] = match_count
 
-# Sort so the best matches come first.
-ranked.sort(reverse=True)
-
-if len(ranked) == 0:
+if len(scores) == 0:
     st.warning("No conditions in our dataset matched those symptoms. "
                "Try picking different ones.")
     st.stop()
 
+# Put the conditions in order, best match first.
+# We find the highest score, save it, then "cross it off" and repeat.
+ranked_names = []
+ranked_counts = []
+scores_left = dict(scores)  # a copy we can cross things off of
+
+while len(scores_left) > 0:
+    best_disease = ""
+    best_count = -1
+    for disease in scores_left:
+        if scores_left[disease] > best_count:
+            best_count = scores_left[disease]
+            best_disease = disease
+    ranked_names.append(best_disease)
+    ranked_counts.append(best_count)
+    del scores_left[best_disease]  # cross it off so we don't pick it again
+
 # Keep only the top N the user asked for.
-top_matches = ranked[:top_n]
+top_conditions = ranked_names[:top_n]
+top_counts = ranked_counts[:top_n]
 
 
 # ----------------------------------------------------------------------
@@ -164,24 +189,20 @@ top_matches = ranked[:top_n]
 
 st.subheader("Top matching conditions")
 
-chart_conditions = []
-chart_scores = []
-for match_count, disease in top_matches:
-    chart_conditions.append(disease)
-    chart_scores.append(match_count)
-
-# Put the numbers in a small table so Streamlit can draw the bar chart.
-chart_df = pd.DataFrame({
-    "Condition": chart_conditions,
-    "Matching symptoms": chart_scores,
-})
-chart_df = chart_df.set_index("Condition")
-st.bar_chart(chart_df)
+# st.bar_chart can take a dictionary of lists. We tell it which list is the
+# x-axis (the condition names) and which is the y-axis (the match counts).
+st.bar_chart(
+    {"Condition": top_conditions, "Matching symptoms": top_counts},
+    x="Condition",
+    y="Matching symptoms",
+)
 
 # Also list the matches in words, with a match percentage.
-for match_count, disease in top_matches:
-    percent = round(match_count / len(chosen) * 100)
-    st.write("**" + disease + "** — matches " + str(match_count) +
+for i in range(len(top_conditions)):
+    disease = top_conditions[i]
+    count = top_counts[i]
+    percent = round(count / len(chosen) * 100)
+    st.write("**" + disease + "** — matches " + str(count) +
              " of your " + str(len(chosen)) + " symptoms (" + str(percent) + "%)")
 
 
@@ -191,12 +212,7 @@ for match_count, disease in top_matches:
 
 st.subheader("Look closer at one condition")
 
-# Build the list of condition names that matched, for the dropdown.
-matched_names = []
-for match_count, disease in top_matches:
-    matched_names.append(disease)
-
-selected = st.selectbox("Pick a condition to learn more about:", matched_names)
+selected = st.selectbox("Pick a condition to learn more about:", top_conditions)
 
 # Show its description if we have one.
 if selected in descriptions:
@@ -209,20 +225,22 @@ for symptom in chosen:
         your_matching.append(symptom)
 
 if len(your_matching) > 0:
-    sev_symptoms = []
+    sev_labels = []
     sev_values = []
     for symptom in your_matching:
-        sev_symptoms.append(pretty(symptom))
-        # Use .get so a missing symptom just counts as 0 instead of crashing.
-        sev_values.append(severity.get(symptom, 0))
+        sev_labels.append(pretty(symptom))
+        # Look up how serious the symptom is. If it's not in the file, use 0.
+        if symptom in severity:
+            sev_values.append(severity[symptom])
+        else:
+            sev_values.append(0)
 
-    sev_df = pd.DataFrame({
-        "Symptom": sev_symptoms,
-        "Severity (higher = more serious)": sev_values,
-    })
-    sev_df = sev_df.set_index("Symptom")
     st.write("How serious your matching symptoms are for **" + selected + "**:")
-    st.bar_chart(sev_df)
+    st.bar_chart(
+        {"Symptom": sev_labels, "Severity (higher = more serious)": sev_values},
+        x="Symptom",
+        y="Severity (higher = more serious)",
+    )
 
 # Show precaution tips if we have them.
 if selected in precautions and len(precautions[selected]) > 0:
@@ -273,6 +291,7 @@ for symptom in diseases[disease_a]:
 
 st.write("**Symptoms they share:**")
 if len(shared) > 0:
-    st.write(", ".join(sorted(shared)))
+    shared.sort()
+    st.write(", ".join(shared))
 else:
     st.write("These two conditions share no symptoms in our dataset.")
