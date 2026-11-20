@@ -1,0 +1,10 @@
+# NEVER commit your API key! This keeps the secrets file out of GitHub.
+.streamlit/secrets.toml
+
+# Python stuff we don't need in the repo
+.venv/
+__pycache__/
+*.pyc
+
+# Mac stuff
+.DS_Store
